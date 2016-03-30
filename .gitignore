@@ -3,7 +3,9 @@ logs
 *.log
 
 # Compiled library
-lib/
+tmp/
+bin/
+build/
 distribution/
 
 # Dependency directory
