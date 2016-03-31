@@ -8,7 +8,6 @@ import blessed from 'blessed';
 
 let conf, defCert, defKey;
 let defProtocol, defAccount, defPassword, devices;
-let listSelectedIndex = 0;
 let certInfoArr = [];
 let prerparedToUpdate = [];
 
@@ -28,7 +27,7 @@ function makeUi() {
     left: 0,
     width: '100%',
     align: 'center',
-    content: '{black-fg}Compal Update SSL Tool{black-fg}',
+    content: '{black-fg}Compal Update SSL Tool{black-fg} {green-fg}(Press "q", "ESC", or "Ctrl-c" to exit){green-fg}',
     style: {
       bg: '#0000ff'
     },
@@ -74,27 +73,33 @@ function makeUi() {
 
     if (key.name === 'up' || key.name === 'k') {
       devList.up();
-      screen.render();
-      if (listSelectedIndex > 0) listSelectedIndex--;
-      logger.log(chalk.grey('View ' + devList.items[listSelectedIndex].content + ' SSL'));
       let certInfo = certInfoArr.find((cert) => {
-        return cert.ip == devList.items[listSelectedIndex].content;
+        return cert.ip === devList.ritems[devList.selected];
       });
-      certView.setContent(inspect(certInfo));
+      if (certView !== undefined)
+        certView.setContent(inspect(certInfo));
+      screen.render();
       return;
     }
     else if (key.name === 'down' || key.name === 'j') {
       devList.down();
-      screen.render();
-      listSelectedIndex++;
-      if (listSelectedIndex >= certInfoArr.length) listSelectedIndex--;
-      logger.log(chalk.grey('View ' + devList.items[listSelectedIndex].content + ' SSL'));
       let certInfo = certInfoArr.find((cert) => {
-        return cert.ip == devList.items[listSelectedIndex].content;
+        return cert.ip === devList.ritems[devList.selected];
       });
-      certView.setContent(inspect(certInfo));
+      if (certView !== undefined)
+        certView.setContent(inspect(certInfo));
+      screen.render();
       return;
     }
+  });
+
+  devList.on('select', (item, selected) => {
+    let certInfo = certInfoArr.find((cert) => {
+      return cert.ip === item.getText();
+    });
+    if (certView !== undefined)
+      certView.setContent(inspect(certInfo));
+    screen.render();
   });
 
   certView = blessed.box({
@@ -116,6 +121,7 @@ function makeUi() {
         bg: 'default'
       },
     },
+    scrollable: true,
     scrollback: 100,
     scrollbar: {
       ch: ' ',
@@ -222,8 +228,8 @@ function fillDefaultSettings() {
     defCert = __dirname + '/web-cert.pem';
     defKey = __dirname + '/web-certkey.pem';
   } catch (err) {
-    logger.log(chalk.bgRed(err));
-    logger.log(chalk.bgRed.bold('Please make sure all needed files are ready.'));
+    logger.log(chalk.black.bgRed(err));
+    logger.log(chalk.black.bgRed.bold('Please make sure all needed files are ready.'));
     process.exit(0);
   }
 
@@ -320,7 +326,7 @@ async function fetchSsl(protocol, ip, account, password, index) {
   logger.log(ip + ': Get SSL done');
 
   } catch (err) {
-    logger.log(chalk.bgRed(err));
+    logger.log(chalk.black.bgRed(err));
   }
 };
 
@@ -399,7 +405,7 @@ async function uploadSsl(protocol, ip, account, password, cert, key) {
     i++;
   });
 
-  devList.select(listSelectedIndex);
+  devList.select(0);
 
   let submit = createSubmitButton(++i);
   screen.render();
