@@ -290,7 +290,7 @@ function createSubmitButton(topValue) {
   return submit;
 }
 
-async function fetchSsl(protocol, ip, account, password, index) {
+async function fetchSsl(protocol, ip, account, password, index, cb) {
 
   logger.log(ip + ': Get SSL');
   try {
@@ -323,11 +323,12 @@ async function fetchSsl(protocol, ip, account, password, index) {
     if (cc != 0)
       logger.log(chalk.red('Logout: ' + cc));
 
-  logger.log(ip + ': Get SSL done');
-
   } catch (err) {
     logger.log(chalk.black.bgRed(err));
   }
+
+  logger.log(ip + ': Get SSL done');
+  cb();
 };
 
 function startUpload() {
@@ -387,31 +388,40 @@ async function uploadSsl(protocol, ip, account, password, cert, key) {
 
   let i = 0;
 
-  devices.forEach((dev) => {
+  const promises = devices.map((dev) => {
+    return new Promise((resolve, reject) => {
 
-    // Fill in the list
-    devList.addItem(dev.ip);
-    screen.render();
+      let protocol = defProtocol || dev.protocol;
+      let account = defAccount || dev.account;
+      let password = defPassword || dev.password;
 
-    // Fill in the checkbox
-    createCheckbox(i, dev.ip);
-    screen.render();
+      fetchSsl(protocol, dev.ip, account, password, i, () => {
 
-    let protocol = defProtocol || dev.protocol;
-    let account = defAccount || dev.account;
-    let password = defPassword || dev.password;
+        // Fill in the list
+        devList.addItem(dev.ip);
+        screen.render();
 
-    fetchSsl(protocol, dev.ip, account, password, i);
-    i++;
+        // Fill in the checkbox
+        createCheckbox(i, dev.ip);
+        screen.render();
+
+        i++;
+        resolve();
+      });
+    });
   });
 
-  devList.select(0);
+  Promise.all(promises).then(() => {
 
-  let submit = createSubmitButton(++i);
-  screen.render();
+    let submit = createSubmitButton(++i);
+    screen.render();
 
-  submit.on('press', () => {
-    form.submit();
+    devList.select(0);
+
+    submit.on('press', () => {
+      form.submit();
+    });
+    logger.log(chalk.green('Get all SSL Certificate Info doen.'));
+
   });
-
 }());
