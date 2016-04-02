@@ -5,14 +5,48 @@ import { inspect } from 'util';
 import bmcHapi from 'node-bmc-hapi';
 import chalk from 'chalk';
 import blessed from 'blessed';
+import yargs from 'yargs';
 
 let conf, defCert, defKey;
 let defProtocol, defAccount, defPassword, devices;
 let certInfoArr = [];
-let prerparedToUpdate = [];
+let preparedToUpdate = [];
 
 // blessed
 let screen, header, devList, form, logger, certView;
+
+// yargs: make options
+let options = yargs
+  .usage('Usage: $0 <command> [options]')
+  .command('go', 'Start upload')
+  .demand(1)
+  .help('h')
+  .alias('h', 'help')
+  .epilog('Copyright 2016 Compal')
+  .argv;
+
+let command = options._[0];
+if (command === 'go') {
+  yargs.reset()
+  .usage('Usage: $0 go [options]')
+  .option('i', {
+    alias: 'interactive',
+    describe: 'Get into interactive mode'
+  })
+  .option('p', {
+    alias: 'pick',
+    describe: 'Pick a config file',
+    type: 'string',
+    nargs: 1,
+    default: 'conf.json'
+  })
+  .epilog('Copyright 2016 Compal')
+  .argv;
+} else {
+  yargs.showHelp();
+  console.log('Invalid command');
+  process.exit(0);
+}
 
 function makeUi() {
   screen = blessed.screen({
@@ -169,7 +203,7 @@ function makeUi() {
         if (prop == 'Submit')
           continue;
         if (data[prop])
-          prerparedToUpdate.push(prop);
+          preparedToUpdate.push(prop);
       }
     }
     screen.render();
@@ -221,22 +255,27 @@ function makeUi() {
 }
 
 
-function fillDefaultSettings() {
+function fillDefaultSettings(file = 'conf.json') {
 
   try {
-    conf = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'conf.json'), 'utf-8'));
-    defCert = __dirname + '/web-cert.pem';
-    defKey = __dirname + '/web-certkey.pem';
+    conf = JSON.parse(fs.readFileSync(path.resolve(__dirname, file), 'utf-8'));
   } catch (err) {
-    logger.log(chalk.black.bgRed(err));
-    logger.log(chalk.black.bgRed.bold('Please make sure all needed files are ready.'));
+    console.log(chalk.black.bgRed(err));
+    console.log(chalk.black.bgRed('Please make sure all needed files are ready.'));
     process.exit(0);
   }
 
   defProtocol = conf.protocol || 'https';
-  defAccount = conf.account || 'admin';
+  defAccount  = conf.account  || 'admin';
   defPassword = conf.password || 'admin';
-  devices = conf.devices;
+  defCert     = __dirname + conf.cert || __dirname + '/web-cert.pem';
+  defKey      = __dirname + conf.key  || __dirname + '/web-certkey.pem';
+  devices     = conf.devices;
+
+  devices.forEach((dev) => {
+    if (dev.preparedToUpdate)
+      preparedToUpdate.push(dev.ip);
+  });
 }
 
 function createCheckbox(topValue, ip) {
@@ -246,7 +285,7 @@ function createCheckbox(topValue, ip) {
     mouse: true,
     keys: true,
     shrink: true,
-    checked: true,
+    checked: false,
     style: {
       bg: 'default',
       fg: 'blue'
@@ -339,89 +378,101 @@ function startUpload() {
     let account = defAccount || dev.account;
     let password = defPassword || dev.password;
 
-    if (prerparedToUpdate.indexOf(dev.ip) >= 0)
+    if (preparedToUpdate.indexOf(dev.ip) >= 0) {
       uploadSsl(protocol, dev.ip, account, password, defCert, defKey);
+    }
   });
 }
 
 async function uploadSsl(protocol, ip, account, password, cert, key) {
 
+  if (options.i)
+    console = logger;
+
   try {
-    logger.log(chalk.blue('Starting update SSL to ') + chalk.yellow.bold(ip));
+    console.log(chalk.blue('Starting update SSL to ') + chalk.yellow.bold(ip));
 
     // Login
     let {cc, cookie, token} = await bmcHapi.login(protocol, ip, account, password);
     if (cc != 0)
-      logger.log(chalk.red('Login: ' + cc + ', ' + cookie + ', ' + token));
+      console.log(chalk.red('Login: ' + cc + ', ' + cookie + ', ' + token));
 
     // Upload SSL Cert
     cc = await bmcHapi.uploadSslCert(protocol, ip, cookie, token, cert);
     if (cc != 200)
-      logger.log(chalk.red('Upload SSL Cert: ' + cc));
+      console.log(chalk.red('Upload SSL Cert: ' + cc));
 
     // Upload SSL Key
     cc = await bmcHapi.uploadSslKey(protocol, ip, cookie, token, key);
     if (cc != 200)
-      logger.log(chalk.red('Upload SSL Key: ' + cc));
+      console.log(chalk.red('Upload SSL Key: ' + cc));
 
     // Validate SSL
     cc = await bmcHapi.validateSsl(protocol, ip, cookie, token);
     if (cc != 200)
-      logger.log(chalk.red('Validate SSL: ' + cc));
+      console.log(chalk.red('Validate SSL: ' + cc));
 
     // Restart HTTPS and logout
     cc = await bmcHapi.restartHttps(protocol, ip, cookie, token);
     if (cc != 200)
-      logger.log(chalk.red('Restart HTTPS: ' + cc));
+      console.log(chalk.red('Restart HTTPS: ' + cc));
 
-    logger.log(chalk.blue('Successfully updating SSL to ') + chalk.yellow.bold(ip));
+    console.log(chalk.blue('Successfully updating SSL to ') + chalk.yellow.bold(ip));
 
   } catch (err) {
-    logger.log(chalk.bgRed(err));
+    console.log(chalk.bgRed(err));
   }
 };
 
 (function go() {
 
-  fillDefaultSettings();
-  makeUi();
+  options.p ? fillDefaultSettings(options.p) : fillDefaultSettings();
 
-  let i = 0;
+  if (options.i) {
 
-  const promises = devices.map((dev) => {
-    return new Promise((resolve, reject) => {
+    makeUi();
+    let i = 0;
 
-      let protocol = defProtocol || dev.protocol;
-      let account = defAccount || dev.account;
-      let password = defPassword || dev.password;
+    const promises = devices.map((dev) => {
+      return new Promise((resolve, reject) => {
 
-      fetchSsl(protocol, dev.ip, account, password, i, () => {
+        let protocol = defProtocol || dev.protocol;
+        let account = defAccount || dev.account;
+        let password = defPassword || dev.password;
 
-        // Fill in the list
-        devList.addItem(dev.ip);
-        screen.render();
+        fetchSsl(protocol, dev.ip, account, password, i, () => {
 
-        // Fill in the checkbox
-        createCheckbox(i, dev.ip);
-        screen.render();
+          // Fill in the list
+          devList.addItem(dev.ip);
+          screen.render();
 
-        i++;
-        resolve();
+          // Fill in the checkbox
+          let checkbox = createCheckbox(i, dev.ip);
+          if (dev.preparedToUpdate)
+            checkbox.checked = true;
+          screen.render();
+
+          i++;
+          resolve();
+        });
       });
     });
-  });
 
-  Promise.all(promises).then(() => {
+    Promise.all(promises).then(() => {
 
-    let submit = createSubmitButton(++i);
-    screen.render();
+      let submit = createSubmitButton(++i);
+      screen.render();
 
-    devList.select(0);
+      devList.select(0);
 
-    submit.on('press', () => {
-      form.submit();
+      submit.on('press', () => {
+        form.submit();
+      });
+      logger.log(chalk.green('Get all SSL Certificate Info done.'));
+
     });
-    logger.log(chalk.green('Get all SSL Certificate Info doen.'));
-
-  });
+  }
+  else {
+    startUpload();
+  }
 }());
