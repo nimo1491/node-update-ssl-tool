@@ -7,7 +7,7 @@ import chalk from 'chalk';
 import blessed from 'blessed';
 import yargs from 'yargs';
 
-let conf, defCert, defKey;
+let conf, defCert, defCertkey;
 let defProtocol, defAccount, defPassword, devices;
 let certInfoArr = [];
 let preparedToUpdate = [];
@@ -19,6 +19,7 @@ let screen, header, devList, form, logger, certView;
 let options = yargs
   .usage('Usage: $0 <command> [options]')
   .command('go', 'Start upload')
+  .command('config', 'Read/Write config')
   .demand(1)
   .help('h')
   .alias('h', 'help')
@@ -27,7 +28,8 @@ let options = yargs
 
 let command = options._[0];
 if (command === 'go') {
-  yargs.reset()
+  options = yargs
+  .reset()
   .usage('Usage: $0 go [options]')
   .option('i', {
     alias: 'interactive',
@@ -42,10 +44,42 @@ if (command === 'go') {
   })
   .epilog('Copyright 2016 Compal')
   .argv;
+  launchGo();
+} else if (command === 'config') {
+  options = yargs
+  .reset()
+  .usage('Usage: $0 config [options]')
+  .option('r', {
+    alias: 'read',
+    describe: 'Read data from config file',
+    type: 'array'
+  })
+  .option('w', {
+    alias: 'write',
+    describe: 'Write data to config file',
+    type: 'array',
+    nargs: 2
+  })
+  .option('a', {
+    alias: 'assign',
+    describe: 'Assign a parameter to the device',
+    type: 'array',
+    nargs: 2
+  })
+  .implies('a', 'w')
+  .option('p', {
+    alias: 'pick',
+    describe: 'Pick a config file',
+    type: 'string',
+    nargs: 1,
+    default: 'conf.json'
+  })
+  .epilog('Copyright 2016 Compal')
+  .argv;
+  launchConfig();
 } else {
   yargs.showHelp();
   console.log('Invalid command');
-  process.exit(0);
 }
 
 function makeUi() {
@@ -269,7 +303,7 @@ function fillDefaultSettings(file = 'conf.json') {
   defAccount  = conf.account  || 'admin';
   defPassword = conf.password || 'admin';
   defCert     = __dirname + conf.cert || __dirname + '/web-cert.pem';
-  defKey      = __dirname + conf.key  || __dirname + '/web-certkey.pem';
+  defCertkey  = __dirname + conf.certkey  || __dirname + '/web-certkey.pem';
   devices     = conf.devices;
 
   devices.forEach((dev) => {
@@ -379,7 +413,7 @@ function startUpload() {
     let password = defPassword || dev.password;
 
     if (preparedToUpdate.indexOf(dev.ip) >= 0) {
-      uploadSsl(protocol, dev.ip, account, password, defCert, defKey);
+      uploadSsl(protocol, dev.ip, account, password, defCert, defCertkey);
     }
   });
 }
@@ -424,7 +458,7 @@ async function uploadSsl(protocol, ip, account, password, cert, key) {
   }
 };
 
-(function go() {
+function launchGo() {
 
   options.p ? fillDefaultSettings(options.p) : fillDefaultSettings();
 
@@ -475,4 +509,122 @@ async function uploadSsl(protocol, ip, account, password, cert, key) {
   else {
     startUpload();
   }
-}());
+}
+
+function launchConfig() {
+
+  let conf;
+  options.p ? conf = options.p : conf = 'conf.json';
+
+  if (options.r !== undefined) {
+    readConfigParam(conf, options.r);
+  }
+
+  if (options.w !== undefined) {
+    console.log(options);
+    writeConfigParam(conf, options.w, options.a);
+  }
+}
+
+function writeConfigParam(configFile, keys, assigned) {
+
+  let configData, isFileExisted;
+
+  try {
+    fs.statSync(path.resolve(__dirname, configFile));
+    isFileExisted = true;
+  } catch(e) {
+    isFileExisted = false;
+  }
+
+  if (isFileExisted)
+    configData = JSON.parse(fs.readFileSync(path.resolve(__dirname, configFile), 'utf-8'));
+  else
+    configData = new Object();
+
+  console.log(configData);
+  if (keys[0] === 'devices') {
+
+    let newDev = {
+      ip: keys[1],
+      preparedToUpdate: true
+    }
+
+    if (validateIpv4Address(keys[1])) {
+      if (configData.hasOwnProperty('devices')) {
+        let selectedDevIndex = configData.devices.findIndex((dev) => {
+          return dev.ip === keys[1];
+        });
+        if (selectedDevIndex < 0) {       // add a device
+          if (assigned !== undefined)
+            newDev[assigned[0]] = assigned[1];
+          configData.devices.push(newDev);
+        } else {                          // modify the device
+          if (assigned !== undefined) {
+            let toBeModified = configData.devices[selectedDevIndex];
+            toBeModified[assigned[0]] = assigned[1];
+            configData.devices[selectedDevIndex] = toBeModified;
+          } else {
+            console.log(chalk.cyan('The device already existed'));
+          }
+        }
+      } else {                            // add first device
+        configData.devices = new Array();
+        if (assigned !== undefined)
+          newDev[assigned[0]] = assigned[1];
+        configData.devices.push(newDev);
+      }
+    }
+  } else {
+    configData[keys[0]] = keys[1];
+  }
+  console.log(configData);
+
+  // Overwrite the file
+  try {
+    fs.writeFileSync(path.resolve(__dirname, configFile), JSON.stringify(configData, null, 2));
+  } catch(e) {
+    console.log(chalk.red('Got something wrong when writing the file'));
+  }
+}
+
+function readConfigParam(confFile, keys) {
+
+  let configData;
+
+  try {
+    configData = JSON.parse(fs.readFileSync(path.resolve(__dirname, confFile), 'utf-8'));
+  } catch(e) {
+    console.log(chalk.red('Cannot find the config file'));
+  }
+
+  if (keys.length === 0)
+    keys.push('all')
+
+  keys.forEach((key) => {
+    if (key === 'all') {
+      for (let prop in configData) {
+        if (configData.hasOwnProperty(prop))
+          console.log(chalk.magenta(prop + ': ') + chalk.cyan(inspect(configData[prop])));
+      }
+    } else if (validateIpv4Address(key)) {
+      if (configData.hasOwnProperty('devices')) {
+        let dev = configData.devices.find((dev) => {
+          return dev.ip == key;
+        });
+        console.log(chalk.magenta(key + ': ') + chalk.cyan(inspect(dev)));
+      }
+    } else {
+      for (let prop in configData) {
+        if (configData.hasOwnProperty(prop) && prop === key)
+          console.log(chalk.magenta(prop + ': ') + chalk.cyan(inspect(configData[prop])));
+      }
+    }
+  });
+}
+
+function validateIpv4Address(ip) {
+  if (/^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(ip)) {
+    return (true)
+  }
+}
