@@ -6,6 +6,7 @@ import bmcHapi from 'node-bmc-hapi';
 import chalk from 'chalk';
 import blessed from 'blessed';
 import yargs from 'yargs';
+import ip from 'ip';
 
 let conf, defCert, defCertkey;
 let defProtocol, defAccount, defPassword, devices;
@@ -20,6 +21,7 @@ let options = yargs
   .usage('Usage: $0 <command> [options]')
   .command('go', 'Start upload')
   .command('config', 'Read/Write config')
+  .command('discover', 'Discover the devices')
   .demand(1)
   .help('h')
   .alias('h', 'help')
@@ -77,10 +79,45 @@ if (command === 'go') {
   .epilog('Copyright 2016 Compal')
   .argv;
   launchConfig();
+} else if (command === 'discover') {
+  options = yargs
+  .reset()
+  .usage('Usage: $0 discover [options]')
+  .option('t', {
+    alias: 'title',
+    describe: 'Discover the devices by the given title',
+    type: 'string',
+    nargs: 1,
+    default: 'Compal'
+  })
+  .option('b', {
+    alias: 'begin',
+    describe: 'Beginning IP address',
+    type: 'string',
+    nargs: 1
+  })
+  .option('e', {
+    alias: 'end',
+    describe: 'Endign IP address',
+    type: 'string',
+    nargs: 1
+  })
+  .demand(['b', 'e'])
+  .option('p', {
+    alias: 'pick',
+    describe: 'Pick a config file',
+    type: 'string',
+    nargs: 1,
+    default: 'conf.json'
+  })
+  .epilog('Copyright 2016 Compal')
+  .argv;
+  launchDiscover();
 } else {
   yargs.showHelp();
   console.log('Invalid command');
 }
+console.log(options);
 
 function makeUi() {
   screen = blessed.screen({
@@ -513,8 +550,7 @@ function launchGo() {
 
 function launchConfig() {
 
-  let conf;
-  options.p ? conf = options.p : conf = 'conf.json';
+  let conf = options.p;
 
   if (options.r !== undefined) {
     readConfigParam(conf, options.r);
@@ -524,6 +560,73 @@ function launchConfig() {
     console.log(options);
     writeConfigParam(conf, options.w, options.a);
   }
+}
+
+function launchDiscover() {
+
+  let conf = options.p, title = options.t;
+
+  if (ip.isV4Format(options.b) && ip.isV4Format(options.e))
+    startDiscover(conf, title, options.b, options.e);
+}
+
+function startDiscover(conf, title, beginIp, endIp) {
+
+  let configData, isFileExisted;
+  let ipList = new Array();
+  let realIpList = new Array();
+
+  try {
+    fs.statSync(path.resolve(__dirname, conf));
+    isFileExisted = true;
+  } catch(e) {
+    isFileExisted = false;
+  }
+
+  if (isFileExisted)
+    configData = JSON.parse(fs.readFileSync(path.resolve(__dirname, conf), 'utf-8'));
+  else
+    configData = new Object();
+
+  let beginIpNum = ip.toLong(beginIp);
+  let endIpNum = ip.toLong(endIp);
+
+  for (let i = beginIpNum; i <= endIpNum; i++)
+    ipList.push(ip.fromLong(i));
+
+  console.log('Start discovering BMC from ' + beginIp + ' to ' + endIp);
+  console.log('Please wait....');
+  const promises = ipList.map((ipAddr) => {
+    return new Promise((resolve, reject) => {
+      detectBmc('https', ipAddr, title, (err, isDev) => {
+        if (err)
+          resolve();
+        if (isDev) {
+          realIpList.push(ipAddr);
+        }
+        resolve();
+      });
+    });
+  });
+
+  Promise.all(promises).then(() => {
+    console.log(chalk.green('Discover done'));
+    console.log(chalk.magenta('Got ' + realIpList.length + ' devices'));
+    realIpList.forEach((dev) => {
+      console.log(chalk.magenta(dev));
+      writeConfigParam(conf, ['devices', dev]);
+    });
+  });
+}
+
+function detectBmc(protocol, ipAddr, title, cb) {
+
+  bmcHapi.detectDev('https', ipAddr, title).then((args) => {
+    let {cc, isDev} = args
+    cb(null, isDev);
+  }).catch((err) => {
+    cb(err);
+  });
 }
 
 function writeConfigParam(configFile, keys, assigned) {
@@ -550,7 +653,7 @@ function writeConfigParam(configFile, keys, assigned) {
       preparedToUpdate: true
     }
 
-    if (validateIpv4Address(keys[1])) {
+    if (ip.isV4Format(keys[1])) {
       if (configData.hasOwnProperty('devices')) {
         let selectedDevIndex = configData.devices.findIndex((dev) => {
           return dev.ip === keys[1];
@@ -607,7 +710,7 @@ function readConfigParam(confFile, keys) {
         if (configData.hasOwnProperty(prop))
           console.log(chalk.magenta(prop + ': ') + chalk.cyan(inspect(configData[prop])));
       }
-    } else if (validateIpv4Address(key)) {
+    } else if (ip.isV4Format(key)) {
       if (configData.hasOwnProperty('devices')) {
         let dev = configData.devices.find((dev) => {
           return dev.ip == key;
@@ -621,10 +724,4 @@ function readConfigParam(confFile, keys) {
       }
     }
   });
-}
-
-function validateIpv4Address(ip) {
-  if (/^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(ip)) {
-    return (true)
-  }
 }
