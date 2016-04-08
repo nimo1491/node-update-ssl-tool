@@ -35,7 +35,7 @@ export function writeConfig(configFile, keys, assigned) {
 
         if (selectedDevIndex < 0) {
           if (assigned !== undefined) {
-            newDev[assigned[0]] = assigned[1];
+            newDev[assigned[0]] = JSON.parse(assigned[1]);
           }
           configData.devices.push(newDev);
           console.log(chalk.green(`...${keys[1]}: OK`));
@@ -43,7 +43,7 @@ export function writeConfig(configFile, keys, assigned) {
           // Modify the device
           if (assigned !== undefined) {
             const toBeModified = configData.devices[selectedDevIndex];
-            toBeModified[assigned[0]] = assigned[1];
+            toBeModified[assigned[0]] = JSON.parse(assigned[1]);
             configData.devices[selectedDevIndex] = toBeModified;
           } else {
             console.log(chalk.cyan(`...${keys[1]} already existed, so skip importing this one`));
@@ -53,7 +53,7 @@ export function writeConfig(configFile, keys, assigned) {
         // First time to add the device
         configData.devices = [];
         if (assigned !== undefined) {
-          newDev[assigned[0]] = assigned[1];
+          newDev[assigned[0]] = JSON.parse(assigned[1]);
         }
         configData.devices.push(newDev);
         console.log(chalk.green(`...${keys[1]}: OK`));
