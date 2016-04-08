@@ -1,6 +1,5 @@
 import 'babel-polyfill';
 import fs from 'fs';
-import path from 'path';
 import { inspect } from 'util';
 import chalk from 'chalk';
 import blessed from 'blessed';
@@ -372,7 +371,7 @@ function makeUi() {
 function fillDefaultSettings(file = 'conf.json') {
   // Make sure the config file is existed
   try {
-    conf = JSON.parse(fs.readFileSync(path.resolve(__dirname, file), 'utf-8'));
+    conf = JSON.parse(fs.readFileSync(file, 'utf-8'));
   } catch (err) {
     console.log(chalk.black.bgRed(err));
     console.log(chalk.black.bgRed('Please make sure all needed files are ready.'));
@@ -385,15 +384,15 @@ function fillDefaultSettings(file = 'conf.json') {
   devices = conf.devices;
 
   if (conf.cert === undefined) {
-    defCert = `${__dirname}/web-cert.pem`;
+    defCert = './web-cert.pem';
   } else {
-    defCert = `${__dirname}/${conf.cert}`;
+    defCert = `./${conf.cert}`;
   }
 
   if (conf.certkey === undefined) {
-    defCertkey = `${__dirname}/web-certkey.pem`;
+    defCertkey = './web-certkey.pem';
   } else {
-    defCertkey = `${__dirname}/${conf.certkey}`;
+    defCertkey = `./${conf.certkey}`;
   }
 
   // make sure cert and its key are ready
@@ -407,7 +406,7 @@ function fillDefaultSettings(file = 'conf.json') {
   }
 
   devices.forEach((dev) => {
-    if (dev.preparedToUpdate === 'true') {
+    if (dev.preparedToUpdate === true) {
       preparedToUpdate.push(dev.ip);
     }
   });
@@ -496,7 +495,7 @@ function launchGo() {
 
           // Fill in the checkbox
           const checkbox = createCheckbox(i, dev.ip);
-          if (dev.preparedToUpdate === 'true') {
+          if (dev.preparedToUpdate === true) {
             checkbox.checked = true;
           }
           screen.render();

@@ -1,5 +1,4 @@
 import fs from 'fs';
-import path from 'path';
 import chalk from 'chalk';
 import ip from 'ip';
 import { inspect } from 'util';
@@ -9,7 +8,7 @@ export function writeConfig(configFile, keys, assigned) {
   let isFileExisted;
 
   try {
-    fs.statSync(path.resolve(__dirname, configFile));
+    fs.statSync(configFile);
     isFileExisted = true;
   } catch (e) {
     isFileExisted = false;
@@ -17,7 +16,7 @@ export function writeConfig(configFile, keys, assigned) {
 
   // All data will be maintained in configData
   if (isFileExisted) {
-    configData = JSON.parse(fs.readFileSync(path.resolve(__dirname, configFile), 'utf-8'));
+    configData = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
   } else {
     configData = {};
   }
@@ -66,7 +65,7 @@ export function writeConfig(configFile, keys, assigned) {
 
   // Dump configData into the file as JSON format
   try {
-    fs.writeFileSync(path.resolve(__dirname, configFile), JSON.stringify(configData, null, 2));
+    fs.writeFileSync(configFile, JSON.stringify(configData, null, 2));
   } catch (e) {
     console.log(chalk.red('Got something wrong when writing the file'));
   }
@@ -76,7 +75,7 @@ export function readConfig(confFile, keys) {
   let configData;
 
   try {
-    configData = JSON.parse(fs.readFileSync(path.resolve(__dirname, confFile), 'utf-8'));
+    configData = JSON.parse(fs.readFileSync(confFile, 'utf-8'));
   } catch (e) {
     console.log(chalk.red('Cannot find the config file'));
   }
