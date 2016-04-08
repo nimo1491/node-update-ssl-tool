@@ -2,33 +2,55 @@ import 'babel-polyfill';
 import fs from 'fs';
 import path from 'path';
 import { inspect } from 'util';
-import bmcHapi from 'node-bmc-hapi';
 import chalk from 'chalk';
 import blessed from 'blessed';
 import yargs from 'yargs';
 import ip from 'ip';
+import { readConfig, writeConfig } from './Config';
+import { fetchSsl, uploadSsl } from './HapiBundle';
+import discover from './discover';
 
-let conf, defCert, defCertkey;
-let defProtocol, defAccount, defPassword, devices;
-let certInfoArr = [];
-let preparedToUpdate = [];
+let conf;
+let defCert;
+let defCertkey;
+let defProtocol;
+let defAccount;
+let defPassword;
+let devices;
+const certInfoArr = [];
+const preparedToUpdate = [];
 
 // blessed
-let screen, header, devList, form, logger, certView;
+let screen;
+let devList;
+let form;
+let logger;
+let certView;
+
+/** Supported parameters
+ *  For read, user can direct give an IP to get the infomation of the specific device.
+ *  For write, user have to use "devices" to access a specific.
+ *  For example:
+ *    $0 config -r 192.168.0.100            // Read the info of 192.168.0.100
+ *    $0 config -w 192.168.0.100            // Wrong
+ *    $0 config -w devices 192.168.0.100    // Correct, should use "devices" as parameter
+*/
+const supportedReadParam = ['all', 'cert', 'key', 'protocol', 'account', 'password', 'devices'];
+const supportedWriteParam = ['cert', 'key', 'protocol', 'account', 'password', 'devices'];
 
 // yargs: make options
 let options = yargs
   .usage('Usage: $0 <command> [options]')
-  .command('go', 'Start upload')
-  .command('config', 'Read/Write config')
   .command('discover', 'Discover the devices')
+  .command('config', 'Read/Write config')
+  .command('go', 'Start upload')
   .demand(1)
   .help('h')
   .alias('h', 'help')
   .epilog('Copyright 2016 Compal')
   .argv;
 
-let command = options._[0];
+const command = options._[0];
 if (command === 'go') {
   options = yargs
   .reset()
@@ -44,8 +66,14 @@ if (command === 'go') {
     nargs: 1,
     default: 'conf.json'
   })
+  .example('$0 go', 'Read default config file and update immediately')
+  .example('$0 go -i', 'Go to interactive mode')
+  .example('$0 go -p my.json', 'Pick my.json as your config file')
+  .example('$0 go -p my.json -i',
+           'Pick my.json as your config file and open nteractive mode')
   .epilog('Copyright 2016 Compal')
   .argv;
+
   launchGo();
 } else if (command === 'config') {
   options = yargs
@@ -76,8 +104,24 @@ if (command === 'go') {
     nargs: 1,
     default: 'conf.json'
   })
+  .example('$0 config', 'Dump default config file')
+  .example('$0 config -r devices',
+           'Dump devices property from default config file')
+  .example('$0 config -r protocol cert',
+           'Dump multiple properties')
+  .example('$0 config -r protocol -p my.json',
+           'Dump protocol property from my.json')
+  .example('$0 config -w protocol http',
+           'Set protocol to http and save it in the default config file')
+  .example('$0 config -r -w password myPassword',
+           'Set password to myPassword and then dump the default config file')
+  .example('$0 config -w devices 192.168.0.100 -p my.json',
+           'Add 192.168.0.100 and save it in my.json')
+  .example('$0 config -w devices 192.168.0.110 -a account myAccount',
+           'Add 192.168.0.110 with default account property')
   .epilog('Copyright 2016 Compal')
   .argv;
+
   launchConfig();
 } else if (command === 'discover') {
   options = yargs
@@ -110,14 +154,20 @@ if (command === 'go') {
     nargs: 1,
     default: 'conf.json'
   })
+  .example('$0 discover -b 192.168.0.0 -e 192.168.0.200',
+           'Discover from 192.168.0.0 to 192.168.0.200 by the default HTML title' +
+           ' and save the result in the default config file')
+  .example('$0 discover -b 192.168.0.0 -e 192.168.0.200 -t MyServer -p my.json',
+           'Discover from 192.168.0.0 to 192.168.0.200 by MyServer' +
+           ' and save the result in the my.json')
   .epilog('Copyright 2016 Compal')
   .argv;
+
   launchDiscover();
 } else {
   yargs.showHelp();
   console.log('Invalid command');
 }
-console.log(options);
 
 function makeUi() {
   screen = blessed.screen({
@@ -126,13 +176,14 @@ function makeUi() {
     warning: true
   });
 
-  header = blessed.text({
+  blessed.text({
     parent: screen,
     top: 0,
     left: 0,
     width: '100%',
     align: 'center',
-    content: '{black-fg}Compal Update SSL Tool{black-fg} {green-fg}(Press "q", "ESC", or "Ctrl-c" to exit){green-fg}',
+    content: '{black-fg}Compal Update SSL Tool{black-fg} ' +
+             '{green-fg}(Press "q", "ESC", or "Ctrl-c" to exit){green-fg}',
     style: {
       bg: '#0000ff'
     },
@@ -172,38 +223,33 @@ function makeUi() {
         inverse: true
       }
     }
-  })
+  });
 
   devList.on('keypress', (ch, key) => {
-
     if (key.name === 'up' || key.name === 'k') {
       devList.up();
-      let certInfo = certInfoArr.find((cert) => {
-        return cert.ip === devList.ritems[devList.selected];
-      });
-      if (certView !== undefined)
+      const certInfo = certInfoArr.find(cert => cert.ip === devList.ritems[devList.selected]);
+      if (certView !== undefined) {
         certView.setContent(inspect(certInfo));
+      }
       screen.render();
       return;
-    }
-    else if (key.name === 'down' || key.name === 'j') {
+    } else if (key.name === 'down' || key.name === 'j') {
       devList.down();
-      let certInfo = certInfoArr.find((cert) => {
-        return cert.ip === devList.ritems[devList.selected];
-      });
-      if (certView !== undefined)
+      const certInfo = certInfoArr.find(cert => cert.ip === devList.ritems[devList.selected]);
+      if (certView !== undefined) {
         certView.setContent(inspect(certInfo));
+      }
       screen.render();
       return;
     }
   });
 
-  devList.on('select', (item, selected) => {
-    let certInfo = certInfoArr.find((cert) => {
-      return cert.ip === item.getText();
-    });
-    if (certView !== undefined)
+  devList.on('select', (item) => {
+    const certInfo = certInfoArr.find(cert => cert.ip === item.getText());
+    if (certView !== undefined) {
       certView.setContent(inspect(certInfo));
+    }
     screen.render();
   });
 
@@ -267,14 +313,13 @@ function makeUi() {
   });
 
   form.on('submit', (data) => {
-
     // Fill in preparedToUpdate
-    for (let prop in data) {
+    for (const prop in data) {
       if (data.hasOwnProperty(prop)) {
-        if (prop == 'Submit')
-          continue;
-        if (data[prop])
+        if (prop === 'Submit') continue;
+        if (data[prop]) {
           preparedToUpdate.push(prop);
+        }
       }
     }
     screen.render();
@@ -317,9 +362,7 @@ function makeUi() {
     }
   });
 
-  screen.key(['escape', 'q', 'C-c'], (ch, key) => {
-    return process.exit(0);
-  });
+  screen.key(['escape', 'q', 'C-c'], () => process.exit(0));
 
   devList.focus();
   screen.render();
@@ -327,7 +370,7 @@ function makeUi() {
 
 
 function fillDefaultSettings(file = 'conf.json') {
-
+  // Make sure the config file is existed
   try {
     conf = JSON.parse(fs.readFileSync(path.resolve(__dirname, file), 'utf-8'));
   } catch (err) {
@@ -337,21 +380,41 @@ function fillDefaultSettings(file = 'conf.json') {
   }
 
   defProtocol = conf.protocol || 'https';
-  defAccount  = conf.account  || 'admin';
+  defAccount = conf.account || 'admin';
   defPassword = conf.password || 'admin';
-  defCert     = __dirname + conf.cert || __dirname + '/web-cert.pem';
-  defCertkey  = __dirname + conf.certkey  || __dirname + '/web-certkey.pem';
-  devices     = conf.devices;
+  devices = conf.devices;
+
+  if (conf.cert === undefined) {
+    defCert = `${__dirname}/web-cert.pem`;
+  } else {
+    defCert = `${__dirname}/${conf.cert}`;
+  }
+
+  if (conf.certkey === undefined) {
+    defCertkey = `${__dirname}/web-certkey.pem`;
+  } else {
+    defCertkey = `${__dirname}/${conf.certkey}`;
+  }
+
+  // make sure cert and its key are ready
+  try {
+    fs.statSync(defCert);
+    fs.statSync(defCertkey);
+  } catch (err) {
+    console.log(chalk.black.bgRed(err));
+    console.log(chalk.black.bgRed('Please make sure all needed files are ready.'));
+    process.exit(0);
+  }
 
   devices.forEach((dev) => {
-    if (dev.preparedToUpdate)
+    if (dev.preparedToUpdate === 'true') {
       preparedToUpdate.push(dev.ip);
+    }
   });
 }
 
-function createCheckbox(topValue, ip) {
-
-  let checkbox = blessed.checkbox({
+function createCheckbox(topValue, ipAddr) {
+  const checkbox = blessed.checkbox({
     parent: form,
     mouse: true,
     keys: true,
@@ -364,16 +427,15 @@ function createCheckbox(topValue, ip) {
     height: 2,
     left: 0,
     top: topValue,
-    name: ip,
-    content: ip
+    name: ipAddr,
+    content: ipAddr
   });
 
   return checkbox;
 }
 
 function createSubmitButton(topValue) {
-
-  let submit = blessed.button({
+  const submit = blessed.button({
     parent: form,
     mouse: true,
     keys: true,
@@ -400,328 +462,126 @@ function createSubmitButton(topValue) {
   return submit;
 }
 
-async function fetchSsl(protocol, ip, account, password, index, cb) {
-
-  logger.log(ip + ': Get SSL');
-  try {
-    // Login
-    let {cc, cookie, token} = await bmcHapi.login(protocol, ip, account, password);
-    if (cc != 0)
-      logger.log(chalk.red('Login: ' + cc + ', ' + cookie + ', ' + token));
-
-    // Get SSL Cert
-    let certRes;
-    certRes = await bmcHapi.getSslCert(protocol, ip, cookie, token);
-    if (certRes.cc != 0) {
-      logger.log(chalk.red('Get SSL Cert: ' + certRes.cc));
-    }
-    else {
-      certRes.certInfo.ip = ip;
-      certInfoArr.push(certRes.certInfo);
-    }
-
-    // Show the first device in the conf file
-    if (index == 0) {
-      let certInfo = certInfoArr.find((cert) => {
-        return cert.ip == ip;
-      });
-      certView.setContent(inspect(certInfo));
-    }
-
-    // Logout
-    cc = await bmcHapi.logout(protocol, ip, cookie, token);
-    if (cc != 0)
-      logger.log(chalk.red('Logout: ' + cc));
-
-  } catch (err) {
-    logger.log(chalk.black.bgRed(err));
-  }
-
-  logger.log(ip + ': Get SSL done');
-  cb();
-};
-
 function startUpload() {
-
   devices.forEach((dev) => {
-
-    let protocol = defProtocol || dev.protocol;
-    let account = defAccount || dev.account;
-    let password = defPassword || dev.password;
+    const protocol = dev.protocol || defProtocol;
+    const account = dev.account || defAccount;
+    const password = dev.password || defPassword;
 
     if (preparedToUpdate.indexOf(dev.ip) >= 0) {
-      uploadSsl(protocol, dev.ip, account, password, defCert, defCertkey);
+      let overwriteStdout = null;
+      if (options.i) overwriteStdout = logger;
+      uploadSsl(overwriteStdout, protocol, dev.ip, account, password, defCert, defCertkey);
     }
   });
 }
 
-async function uploadSsl(protocol, ip, account, password, cert, key) {
-
-  if (options.i)
-    console = logger;
-
-  try {
-    console.log(chalk.blue('Starting update SSL to ') + chalk.yellow.bold(ip));
-
-    // Login
-    let {cc, cookie, token} = await bmcHapi.login(protocol, ip, account, password);
-    if (cc != 0)
-      console.log(chalk.red('Login: ' + cc + ', ' + cookie + ', ' + token));
-
-    // Upload SSL Cert
-    cc = await bmcHapi.uploadSslCert(protocol, ip, cookie, token, cert);
-    if (cc != 200)
-      console.log(chalk.red('Upload SSL Cert: ' + cc));
-
-    // Upload SSL Key
-    cc = await bmcHapi.uploadSslKey(protocol, ip, cookie, token, key);
-    if (cc != 200)
-      console.log(chalk.red('Upload SSL Key: ' + cc));
-
-    // Validate SSL
-    cc = await bmcHapi.validateSsl(protocol, ip, cookie, token);
-    if (cc != 200)
-      console.log(chalk.red('Validate SSL: ' + cc));
-
-    // Restart HTTPS and logout
-    cc = await bmcHapi.restartHttps(protocol, ip, cookie, token);
-    if (cc != 200)
-      console.log(chalk.red('Restart HTTPS: ' + cc));
-
-    console.log(chalk.blue('Successfully updating SSL to ') + chalk.yellow.bold(ip));
-
-  } catch (err) {
-    console.log(chalk.bgRed(err));
-  }
-};
-
 function launchGo() {
-
-  options.p ? fillDefaultSettings(options.p) : fillDefaultSettings();
+  fillDefaultSettings(options.p);
 
   if (options.i) {
-
     makeUi();
     let i = 0;
 
-    const promises = devices.map((dev) => {
-      return new Promise((resolve, reject) => {
+    const promises = devices.map((dev) =>
+      new Promise((resolve) => {
+        const protocol = defProtocol || dev.protocol;
+        const account = defAccount || dev.account;
+        const password = defPassword || dev.password;
 
-        let protocol = defProtocol || dev.protocol;
-        let account = defAccount || dev.account;
-        let password = defPassword || dev.password;
-
-        fetchSsl(protocol, dev.ip, account, password, i, () => {
-
+        fetchSsl(logger, protocol, dev.ip, account, password, (certInfo) => {
           // Fill in the list
           devList.addItem(dev.ip);
           screen.render();
 
           // Fill in the checkbox
-          let checkbox = createCheckbox(i, dev.ip);
-          if (dev.preparedToUpdate)
+          const checkbox = createCheckbox(i, dev.ip);
+          if (dev.preparedToUpdate === 'true') {
             checkbox.checked = true;
+          }
           screen.render();
+
+          if (certInfo !== undefined) {
+            certInfoArr.push(certInfo);
+          }
 
           i++;
           resolve();
         });
-      });
-    });
+      })
+    );
 
     Promise.all(promises).then(() => {
-
-      let submit = createSubmitButton(++i);
+      const submit = createSubmitButton(++i);
       screen.render();
 
       devList.select(0);
+      const certInfo = certInfoArr.find(cert => cert.ip === devList.ritems[devList.selected]);
+      if (certView !== undefined) {
+        certView.setContent(inspect(certInfo));
+      }
 
       submit.on('press', () => {
         form.submit();
       });
-      logger.log(chalk.green('Get all SSL Certificate Info done.'));
 
+      logger.log(chalk.green('Get all SSL Certificate Info done'));
     });
-  }
-  else {
-    startUpload();
+  } else {
+    if (preparedToUpdate.length === 0) {
+      console.log(chalk.yellow('No devices are ready to be updated'));
+    } else {
+      startUpload();
+    }
   }
 }
 
 function launchConfig() {
+  const configFile = options.p;
 
-  let conf = options.p;
-
-  if (options.r !== undefined) {
-    readConfigParam(conf, options.r);
+  // If user doesn't specify any options, then dump all config data
+  if (options.r === undefined && options.w === undefined) {
+    readConfig(configFile, []);
   }
 
+  // Write is prior than read. Which can let user write and read in one command
   if (options.w !== undefined) {
-    console.log(options);
-    writeConfigParam(conf, options.w, options.a);
+    if (supportedWriteParam.indexOf((options.w)[0]) < 0) {
+      console.log(chalk.red('Got unsupported write parameter ') +
+                  chalk.yellow((options.w)[0]));
+      console.log(chalk.red('The support write parameters are ') +
+                  chalk.yellow(supportedWriteParam));
+    } else {
+      writeConfig(configFile, options.w, options.a);
+    }
+  }
+
+  if (options.r !== undefined) {
+    let hasInvalidParam = false;
+
+    options.r.forEach((param) => {
+      if (supportedReadParam.indexOf(param) < 0 && !ip.isV4Format(param)) {
+        console.log(chalk.red('Got unsupported read parameter ') +
+                    chalk.yellow(param));
+        hasInvalidParam = true;
+      }
+    });
+
+    if (hasInvalidParam) {
+      console.log(chalk.red('The support read parameters are ') +
+                  chalk.yellow(`${supportedReadParam} or ip address`));
+    } else {
+      readConfig(configFile, options.r);
+    }
   }
 }
 
 function launchDiscover() {
+  const configFile = options.p;
+  const title = options.t;
 
-  let conf = options.p, title = options.t;
-
-  if (ip.isV4Format(options.b) && ip.isV4Format(options.e))
-    startDiscover(conf, title, options.b, options.e);
-}
-
-function startDiscover(conf, title, beginIp, endIp) {
-
-  let configData, isFileExisted;
-  let ipList = new Array();
-  let realIpList = new Array();
-
-  try {
-    fs.statSync(path.resolve(__dirname, conf));
-    isFileExisted = true;
-  } catch(e) {
-    isFileExisted = false;
-  }
-
-  if (isFileExisted)
-    configData = JSON.parse(fs.readFileSync(path.resolve(__dirname, conf), 'utf-8'));
-  else
-    configData = new Object();
-
-  let beginIpNum = ip.toLong(beginIp);
-  let endIpNum = ip.toLong(endIp);
-
-  for (let i = beginIpNum; i <= endIpNum; i++)
-    ipList.push(ip.fromLong(i));
-
-  console.log('Start discovering BMC from ' + beginIp + ' to ' + endIp);
-  console.log('Please wait....');
-  const promises = ipList.map((ipAddr) => {
-    return new Promise((resolve, reject) => {
-      detectBmc('https', ipAddr, title, (err, isDev) => {
-        if (err)
-          resolve();
-        if (isDev) {
-          realIpList.push(ipAddr);
-        }
-        resolve();
-      });
-    });
-  });
-
-  Promise.all(promises).then(() => {
-    console.log(chalk.green('Discover done'));
-    console.log(chalk.magenta('Got ' + realIpList.length + ' devices'));
-    realIpList.forEach((dev) => {
-      console.log(chalk.magenta(dev));
-      writeConfigParam(conf, ['devices', dev]);
-    });
-  });
-}
-
-function detectBmc(protocol, ipAddr, title, cb) {
-
-  bmcHapi.detectDev('https', ipAddr, title).then((args) => {
-    let {cc, isDev} = args
-    cb(null, isDev);
-  }).catch((err) => {
-    cb(err);
-  });
-}
-
-function writeConfigParam(configFile, keys, assigned) {
-
-  let configData, isFileExisted;
-
-  try {
-    fs.statSync(path.resolve(__dirname, configFile));
-    isFileExisted = true;
-  } catch(e) {
-    isFileExisted = false;
-  }
-
-  if (isFileExisted)
-    configData = JSON.parse(fs.readFileSync(path.resolve(__dirname, configFile), 'utf-8'));
-  else
-    configData = new Object();
-
-  console.log(configData);
-  if (keys[0] === 'devices') {
-
-    let newDev = {
-      ip: keys[1],
-      preparedToUpdate: true
-    }
-
-    if (ip.isV4Format(keys[1])) {
-      if (configData.hasOwnProperty('devices')) {
-        let selectedDevIndex = configData.devices.findIndex((dev) => {
-          return dev.ip === keys[1];
-        });
-        if (selectedDevIndex < 0) {       // add a device
-          if (assigned !== undefined)
-            newDev[assigned[0]] = assigned[1];
-          configData.devices.push(newDev);
-        } else {                          // modify the device
-          if (assigned !== undefined) {
-            let toBeModified = configData.devices[selectedDevIndex];
-            toBeModified[assigned[0]] = assigned[1];
-            configData.devices[selectedDevIndex] = toBeModified;
-          } else {
-            console.log(chalk.cyan('The device already existed'));
-          }
-        }
-      } else {                            // add first device
-        configData.devices = new Array();
-        if (assigned !== undefined)
-          newDev[assigned[0]] = assigned[1];
-        configData.devices.push(newDev);
-      }
-    }
-  } else {
-    configData[keys[0]] = keys[1];
-  }
-  console.log(configData);
-
-  // Overwrite the file
-  try {
-    fs.writeFileSync(path.resolve(__dirname, configFile), JSON.stringify(configData, null, 2));
-  } catch(e) {
-    console.log(chalk.red('Got something wrong when writing the file'));
+  if (ip.isV4Format(options.b) && ip.isV4Format(options.e)) {
+    discover(configFile, title, options.b, options.e);
   }
 }
 
-function readConfigParam(confFile, keys) {
-
-  let configData;
-
-  try {
-    configData = JSON.parse(fs.readFileSync(path.resolve(__dirname, confFile), 'utf-8'));
-  } catch(e) {
-    console.log(chalk.red('Cannot find the config file'));
-  }
-
-  if (keys.length === 0)
-    keys.push('all')
-
-  keys.forEach((key) => {
-    if (key === 'all') {
-      for (let prop in configData) {
-        if (configData.hasOwnProperty(prop))
-          console.log(chalk.magenta(prop + ': ') + chalk.cyan(inspect(configData[prop])));
-      }
-    } else if (ip.isV4Format(key)) {
-      if (configData.hasOwnProperty('devices')) {
-        let dev = configData.devices.find((dev) => {
-          return dev.ip == key;
-        });
-        console.log(chalk.magenta(key + ': ') + chalk.cyan(inspect(dev)));
-      }
-    } else {
-      for (let prop in configData) {
-        if (configData.hasOwnProperty(prop) && prop === key)
-          console.log(chalk.magenta(prop + ': ') + chalk.cyan(inspect(configData[prop])));
-      }
-    }
-  });
-}
