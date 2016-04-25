@@ -1,7 +1,7 @@
 import bmcHapi from 'node-bmc-hapi';
 import chalk from 'chalk';
 
-export async function uploadSsl(output, protocol, ipAddr, account, password, cert, key) {
+export async function uploadSsl(output, protocol, ipAddr, account, password, cert, key, cb) {
   let localStdout;
 
   if (output === null) {
@@ -53,6 +53,8 @@ export async function uploadSsl(output, protocol, ipAddr, account, password, cer
   } catch (err) {
     localStdout.log(chalk.bgRed(err));
   }
+
+  cb();
 }
 
 export async function fetchSsl(output, protocol, ipAddr, account, password, cb) {
@@ -97,4 +99,3 @@ export async function fetchSsl(output, protocol, ipAddr, account, password, cb) 
   localStdout.log(`${ipAddr}: Get SSL done`);
   cb(certRes.certInfo);
 }
-

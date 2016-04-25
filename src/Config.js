@@ -78,6 +78,7 @@ export function readConfig(confFile, keys) {
     configData = JSON.parse(fs.readFileSync(confFile, 'utf-8'));
   } catch (e) {
     console.log(chalk.red('Cannot find the config file'));
+    return;
   }
 
   if (keys.length === 0) {

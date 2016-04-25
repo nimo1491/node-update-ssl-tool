@@ -34,15 +34,15 @@ let certView;
  *    $0 config -w 192.168.0.100            // Wrong
  *    $0 config -w devices 192.168.0.100    // Correct, should use "devices" as parameter
 */
-const supportedReadParam = ['all', 'cert', 'key', 'protocol', 'account', 'password', 'devices'];
-const supportedWriteParam = ['cert', 'key', 'protocol', 'account', 'password', 'devices'];
+const supportedReadParam = ['all', 'cert', 'certkey', 'protocol', 'account', 'password', 'devices'];
+const supportedWriteParam = ['cert', 'certkey', 'protocol', 'account', 'password', 'devices'];
 
 // yargs: make options
 let options = yargs
   .usage('Usage: $0 <command> [options]')
   .command('discover', 'Discover the devices')
   .command('config', 'Read/Write config')
-  .command('go', 'Start upload')
+  .command('go', 'Start update')
   .demand(1)
   .help('h')
   .alias('h', 'help')
@@ -324,7 +324,7 @@ function makeUi() {
     screen.render();
 
     // Start to update
-    startUpload();
+    startUpdate();
   });
 
   logger = blessed.log({
@@ -461,16 +461,27 @@ function createSubmitButton(topValue) {
   return submit;
 }
 
-function startUpload() {
-  devices.forEach((dev) => {
-    const protocol = dev.protocol || defProtocol;
-    const account = dev.account || defAccount;
-    const password = dev.password || defPassword;
+function startUpdate() {
+  const promises = devices.map((dev) =>
+    new Promise((resolve) => {
+      const protocol = dev.protocol || defProtocol;
+      const account = dev.account || defAccount;
+      const password = dev.password || defPassword;
 
-    if (preparedToUpdate.indexOf(dev.ip) >= 0) {
-      let overwriteStdout = null;
-      if (options.i) overwriteStdout = logger;
-      uploadSsl(overwriteStdout, protocol, dev.ip, account, password, defCert, defCertkey);
+      if (preparedToUpdate.indexOf(dev.ip) >= 0) {
+        let overwriteStdout = null;
+        if (options.i) overwriteStdout = logger;
+        uploadSsl(overwriteStdout, protocol, dev.ip, account, password, defCert, defCertkey, () => {
+          resolve();
+        });
+      }
+    })
+  );
+
+  Promise.all(promises).then(() => {
+    if (options.i) {
+      logger.log(chalk.green('Complete updating all SSL certificates'));
+      refreshCertView();
     }
   });
 }
@@ -530,7 +541,7 @@ function launchGo() {
     if (preparedToUpdate.length === 0) {
       console.log(chalk.yellow('No devices are ready to be updated'));
     } else {
-      startUpload();
+      startUpdate();
     }
   }
 }
@@ -584,3 +595,35 @@ function launchDiscover() {
   }
 }
 
+function refreshCertView() {
+  logger.log(chalk.green('Refresh the CertView now'));
+
+  // Clear info array first
+  certInfoArr.length = 0;
+
+  const promises = devices.map((dev) =>
+    new Promise((resolve) => {
+      const protocol = defProtocol || dev.protocol;
+      const account = defAccount || dev.account;
+      const password = defPassword || dev.password;
+
+      fetchSsl(logger, protocol, dev.ip, account, password, (certInfo) => {
+        if (certInfo !== undefined) {
+          certInfoArr.push(certInfo);
+        }
+        resolve();
+      });
+    })
+  );
+
+  Promise.all(promises).then(() => {
+    devList.select(0);
+    const certInfo = certInfoArr.find(cert => cert.ip === devList.ritems[devList.selected]);
+    if (certView !== undefined) {
+      certView.setContent(inspect(certInfo));
+      screen.render();
+    }
+
+    logger.log(chalk.green('Refresh the CertView done'));
+  });
+}
